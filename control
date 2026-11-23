@@ -1,8 +1,8 @@
 Package: com.johndie.triggrbridge
 Name: Triggr 手势桥 for RC
-Version: 1.0.1
+Version: 1.0.2
 Architecture: iphoneos-arm64
-Description: 精简手势桥：把 16 种边缘/多指手势转成 RemoteCompanion 触发器（左/右缘滑入、双指与三指点按/四向滑/捏合张开）。边缘识别器与 Triggr cn5.3.33 同步。无设置面板、无动作执行，全部手势常开，启用与动作请在 RemoteCompanion 的 Add-on 触发器里指派。
+Description: 精简手势桥：把 16 种边缘/多指手势转成 RemoteCompanion 触发器（左/右缘滑入、双指与三指点按/四向滑/捏合张开）。边缘识别器与 Triggr cn5.3.33 同步。无设置面板、无动作执行。只有在该手势的 Add-on 触发器里指派了动作时才识别并冻结画面，未指派的手势完全不干预正常滑屏。
 Maintainer: 777qwq
 Author: 777qwq
 Section: Tweaks

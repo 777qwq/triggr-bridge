@@ -43,6 +43,62 @@ static void TGFire(NSString *gestureId) {
     notify_post(TGBridgeNotification(gestureId).UTF8String);
 }
 
+#pragma mark - RC action gating
+// A gesture is only live when RemoteCompanion actually has an action assigned to its
+// add-on trigger. This is the exact guard RC uses to execute a trigger (master on,
+// trigger enabled, at least one action). Without it every recognizer is registered
+// unconditionally and normal multi-finger scrolling gets frozen — the bug this fixes.
+// An unassigned gesture gets NO recognizer at all: no snapshot, no freeze, no side effect.
+static NSMutableSet<NSString *> *tgArmedGestures;
+
+static NSString *TGRCTriggerKey(NSString *gestureId) {
+    return [@"addon_triggrbridge_" stringByAppendingString:gestureId];
+}
+
+static NSDictionary *TGLoadRCConfig(void) {
+    // Shared path first (where RC saves), then the rootless prefix. Before the first
+    // save there is no config, which correctly means "nothing armed".
+    static NSString *const paths[] = {
+        @"/var/mobile/Documents/rc_triggers.plist",
+        @"/var/jb/var/mobile/Documents/rc_triggers.plist",
+    };
+    for (int i = 0; i < 2; i++) {
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:paths[i]];
+        if (d) return d;
+    }
+    return nil;
+}
+
+static void TGReloadArmedGestures(void) {
+    NSMutableSet *armed = [NSMutableSet set];
+    NSDictionary *config = TGLoadRCConfig();
+    // Mirror RCExecuteTrigger exactly: master on, trigger enabled, actions non-empty.
+    // A missing field is false to RC too, so treat it as not armed — otherwise we
+    // would freeze a gesture whose action RC will refuse to run.
+    if (![config[@"masterEnabled"] boolValue]) {
+        tgArmedGestures = armed;
+        return;
+    }
+    NSDictionary *triggers = config[@"triggers"];
+    if ([triggers isKindOfClass:NSDictionary.class]) {
+        for (NSString *gid in TGBridgeGestureIds()) {
+            NSDictionary *t = triggers[TGRCTriggerKey(gid)];
+            if (![t isKindOfClass:NSDictionary.class]) continue;
+            if (![t[@"enabled"] boolValue]) continue;
+            NSArray *actions = t[@"actions"];
+            if (![actions isKindOfClass:NSArray.class] || actions.count == 0) continue;
+            [armed addObject:gid];
+        }
+    }
+    tgArmedGestures = armed;
+}
+
+static BOOL TGIsArmed(NSString *gestureId) {
+    if (!gestureId) return NO;
+    if (!tgArmedGestures) TGReloadArmedGestures();
+    return [tgArmedGestures containsObject:gestureId];
+}
+
 #pragma mark - Freeze (port from Triggr cn5.3.33)
 
 static void TGMultiFreezeBegin(void) { TGFreezeBegin(); notify_post(TGBridgeFreezeBegin); }
@@ -388,13 +444,18 @@ static void TGUpdateMultiTouchGestures(SBSystemGestureManager *manager) {
     if (!tgMultiRecognizers) tgMultiRecognizers = [NSMutableArray array];
     TGMultiTouchTarget *target = [TGMultiTouchTarget shared];
     for (int idx = 0; idx < TG_SLOT_COUNT; idx++) {
+        NSString *gid = TGSlotGestureId(idx);
+        BOOL want = TGIsArmed(gid);
         UIGestureRecognizer *existing = nil;
         for (UIGestureRecognizer *r in tgMultiRecognizers)
             if ([objc_getAssociatedObject(r, TGMultiIndexKey) intValue] == idx) { existing = r; break; }
-        if (!existing) {
+        if (want && !existing) {
             UIGestureRecognizer *r = [target recognizerFor:idx];
             [manager addGestureRecognizer:r withType:TGMultiTypeBase + idx];
             [tgMultiRecognizers addObject:r];
+        } else if (!want && existing) {
+            [manager removeGestureRecognizer:existing];
+            [tgMultiRecognizers removeObject:existing];
         }
     }
 }
@@ -545,18 +606,25 @@ static void TGUpdateEdgeGestures(void) {
     }
 
     // 左侧：普通 pan，保留原生返回，delegate 允许与 RC 识别器同时识别。
-    if (!tgLeftPan) {
+    // 只在 edge.left 配了动作时才注册；没配则移除，完全不干预系统返回与正常滑动。
+    BOOL wantLeft = TGIsArmed(@"edge.left");
+    if (wantLeft && !tgLeftPan) {
         tgLeftPan = [[TGGPlainPanRecognizer alloc] initWithTarget:target action:@selector(slidLeft:)];
         tgLeftPan.delegate = target;
         tgLeftPan.cancelsTouchesInView = NO;
         tgLeftPan.delaysTouchesBegan = NO;
         tgLeftPan.delaysTouchesEnded = NO;
         [manager addGestureRecognizer:tgLeftPan withType:TGBGestureTypeBase];
+    } else if (!wantLeft && tgLeftPan) {
+        [manager removeGestureRecognizer:tgLeftPan];
+        tgLeftPan = nil;
     }
 
     // 右侧：系统级 screen-edge pan，delegate 允许与 RC 识别器同时识别。
+    // 同样只在 edge.right 配了动作时才注册。
     UIRectEdge physicalRight = TGGSystemEdgeForVisualRight();
-    if (!tgRightEdge) {
+    BOOL wantRight = TGIsArmed(@"edge.right");
+    if (wantRight && !tgRightEdge) {
         tgRightEdge = [[TGGSystemEdgeRecognizer alloc] initWithTarget:target action:@selector(slidRight:)];
         tgRightEdge.delegate = target;
         tgRightEdge.edges = physicalRight;
@@ -566,8 +634,11 @@ static void TGUpdateEdgeGestures(void) {
         tgRightEdge.delaysTouchesBegan = NO;
         tgRightEdge.delaysTouchesEnded = NO;
         [manager addGestureRecognizer:tgRightEdge withType:TGBGestureTypeBase + 1];
-    } else {
+    } else if (wantRight && tgRightEdge) {
         tgRightEdge.edges = physicalRight; // 旋转后更新物理边
+    } else if (!wantRight && tgRightEdge) {
+        [manager removeGestureRecognizer:tgRightEdge];
+        tgRightEdge = nil;
     }
 
     TGUpdateMultiTouchGestures(manager);
@@ -598,5 +669,16 @@ static void TGUpdateEdgeGestures(void) {
 #pragma mark - Constructor
 
 %ctor {
+    // Load the RC trigger config before the first recognizer setup so gating is correct.
+    TGReloadArmedGestures();
     TGUpdateEdgeGestures();
+
+    // RC posts this on every trigger/action save; re-read gating and add/remove
+    // recognizers live, so assigning an action in RC arms the gesture immediately.
+    static int configToken;
+    notify_register_dispatch("com.pizzaman.rc.configchanged", &configToken,
+                             dispatch_get_main_queue(), ^(int t) {
+        TGReloadArmedGestures();
+        TGUpdateEdgeGestures();
+    });
 }

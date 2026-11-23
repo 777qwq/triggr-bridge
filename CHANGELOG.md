@@ -1,5 +1,14 @@
 # TriggrBridge 更新记录
 
+## 1.0.2
+
+- **修复「没配动作也冻结、多指滑不动屏幕」**：1.0.1 去掉设置面板时把原版 Triggr 的 gating 一起删了，14 个多指识别器无条件注册——正常双指 / 三指滚屏、缩放照片，位移一超过 16pt 就被当成手势并冻结画面，而 RC 那边没配动作、通知无人接收，等于白冻结。
+  - 现恢复原版门槛：桥读取 RC 的 `rc_triggers.plist`，**只有当某手势的 Add-on 触发器 `masterEnabled` 开、`enabled` 开、`actions` 非空时才注册它的识别器**（判据与 RC 的 `RCExecuteTrigger` 完全一致，字段缺失一律视为 false）。
+  - 没配动作的手势完全不注册识别器：不快照、不冻结、不误触，正常滑屏畅通。
+  - 监听 `com.pizzaman.rc.configchanged`，在 RC 里配 / 删动作后识别器即时增删，不用重装、不用 respring。
+  - 配了动作的手势仍保留原版冻结手感（识别瞬间钉住画面，防止跟着滚）。
+- 双切片 arm64 + arm64e，rootless。
+
 ## 1.0.1
 
 - **边缘识别器同步到 Triggr cn5.3.33**：
