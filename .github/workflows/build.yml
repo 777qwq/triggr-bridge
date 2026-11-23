@@ -1,0 +1,78 @@
+name: build
+
+# arm64e 的 Objective-C 指针认证只有 Xcode 的 clang + ld64 能写对，
+# 出包固定在 macOS runner 上跑（Linux 的 cctools-port 产出的 arm64e 切片
+# 注入时会在 readClass 崩）。本地 Linux 只用来做语法编译验证。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'exp/**']
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          clang --version | head -2
+          sw_vers
+
+      - name: Install dependencies
+        run: |
+          brew install ldid dpkg xz make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Prepare Theos
+        run: |
+          set -euo pipefail
+          export THEOS="$HOME/theos"
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
+          git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
+          ( cd /tmp/sdks && git sparse-checkout set iPhoneOS16.5.sdk )
+          mkdir -p "$THEOS/sdks"
+          cp -R /tmp/sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+
+      - name: Build (rootless)
+        run: |
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Verify slices
+        run: |
+          set -uo pipefail
+          STAGE=.theos/_/var/jb
+          fail=0
+          for f in "$STAGE"/Library/MobileSubstrate/DynamicLibraries/TriggrBridge.dylib \
+                   "$STAGE"/Library/MobileSubstrate/DynamicLibraries/TriggrBridgeRelay.dylib \
+                   "$STAGE"/Library/PreferenceBundles/TriggrBridge.bundle/TriggrBridge; do
+            echo "== $f"
+            lipo -info "$f"
+            archs=$(lipo -archs "$f")
+            case "$archs" in
+              *arm64e*) ;;
+              *) echo "::error file=$f::缺少 arm64e 切片，A12+ 机型注入不了"; fail=1 ;;
+            esac
+          done
+          echo "-- Add-on JSON --"
+          python3 -c "import json; d=json.load(open('$STAGE/Library/RemoteCompanion/AddOns/triggrbridge.json')); print(len(d['events']), 'events')"
+          exit $fail
+
+      - name: Rename artifact
+        run: |
+          set -euo pipefail
+          for f in packages/*.deb; do
+            mv "$f" "packages/$(basename "$f" | sed 's/^com\.johndie\.//')"
+          done
+          ls -l packages/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: triggrbridge-deb
+          path: packages/*.deb
+          if-no-files-found: error

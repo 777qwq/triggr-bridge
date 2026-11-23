@@ -1,0 +1,37 @@
+{
+  "$schema": "addon.schema.json",
+  "api": 1,
+  "id": "triggrbridge",
+  "name": "Triggr 手势桥",
+  "icon": "hand.raised.fingers.spread",
+  "actions": [
+    {
+      "command": "ping",
+      "name": "连通性测试",
+      "icon": "bolt",
+      "run": [
+        { "notify": "com.johndie.triggrbridge/ping" }
+      ]
+    }
+  ],
+  "events": [
+    { "notify": "com.johndie.triggrbridge/edge.left",        "trigger": { "id": "edge.left",        "name": "从左侧滑入", "icon": "arrow.left",       "states": false } },
+    { "notify": "com.johndie.triggrbridge/edge.right",       "trigger": { "id": "edge.right",       "name": "从右侧滑入", "icon": "arrow.right",      "states": false } },
+
+    { "notify": "com.johndie.triggrbridge/inapp.twotap",     "trigger": { "id": "inapp.twotap",     "name": "双指点按",   "icon": "hand.tap.fill",    "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.twoup",      "trigger": { "id": "inapp.twoup",      "name": "双指上滑",   "icon": "arrow.up",         "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.twodown",    "trigger": { "id": "inapp.twodown",    "name": "双指下滑",   "icon": "arrow.down",       "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.twoleft",    "trigger": { "id": "inapp.twoleft",    "name": "双指左滑",   "icon": "arrow.left",       "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.tworight",   "trigger": { "id": "inapp.tworight",   "name": "双指右滑",   "icon": "arrow.right",      "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.twopinchin", "trigger": { "id": "inapp.twopinchin", "name": "双指捏合",   "icon": "arrow.right.left", "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.twopinchout","trigger": { "id": "inapp.twopinchout","name": "双指张开",   "icon": "arrow.left.right", "states": false } },
+
+    { "notify": "com.johndie.triggrbridge/inapp.threetap",   "trigger": { "id": "inapp.threetap",   "name": "三指点按",   "icon": "hand.tap.fill",    "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.threeup",    "trigger": { "id": "inapp.threeup",    "name": "三指上滑",   "icon": "arrow.up",         "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.threedown",  "trigger": { "id": "inapp.threedown",  "name": "三指下滑",   "icon": "arrow.down",       "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.threeleft",  "trigger": { "id": "inapp.threeleft",  "name": "三指左滑",   "icon": "arrow.left",       "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.threeright", "trigger": { "id": "inapp.threeright", "name": "三指右滑",   "icon": "arrow.right",      "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.pinchin",    "trigger": { "id": "inapp.pinchin",    "name": "三指捏合",   "icon": "arrow.right.left", "states": false } },
+    { "notify": "com.johndie.triggrbridge/inapp.pinchout",   "trigger": { "id": "inapp.pinchout",   "name": "三指张开",   "icon": "arrow.left.right", "states": false } }
+  ]
+}
