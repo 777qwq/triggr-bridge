@@ -9,9 +9,11 @@
 手指手势 → TriggrBridge(SpringBoard 识别 → Darwin 通知) → RC Add-on JSON(events → trigger) → 你在 RC 里指派动作
 ```
 
-- **TriggrBridge.dylib**（注入 SpringBoard）：识别 16 种手势，识别成功发 `com.johndie.triggrbridge/<手势 id>`。
-- **TriggrBridgeRelay.dylib**（注入所有 App）：手势期间冻结列表 / 照片，结束后还原。
+- **TriggrBridge.dylib**（注入 SpringBoard）：识别 16 种手势，识别成功发 `com.johndie.triggrbridge/<手势 id>`。边缘识别器与 Triggr **cn5.3.33** 同步：左侧普通 pan（保留系统原生返回），右侧系统级屏幕边缘手势（Began 即冻结回弹、50pt 抬手触发，横屏自动换算物理边）。
+- **TriggrBridgeRelay.dylib**（注入所有 App）：手势期间冻结列表 / 照片，结束后还原；右侧滑入冻结时立即回弹。
 - **triggrbridge.json**：装到 RC 的 Add-ons 目录，把 16 个通知注册成 `Add-on: …` 触发器。
+
+**没有设置面板，也不读写任何偏好**——16 个手势始终开启。要不要启用某条手势，直接在 RC 的 Add-on 触发器上配置；所有识别器都声明了 `shouldRecognizeSimultaneously = YES`，和 RC 自带的边缘识别器在同一手势层上共存，互不抢占。
 
 ## 16 个手势
 
@@ -27,10 +29,10 @@
 ## 用法
 
 1. 安装本 deb（依赖 RemoteCompanion 已装）。
-2. 打开「设置 → Triggr 手势桥」：总开关与冻结开关默认开，16 个手势默认都开，按需关掉不用的。
-3. 打开 RemoteCompanion → 触发器，找到 `Add-on: 从左侧滑入`、`Add-on: 双指上滑` 等 16 条，
-   给它们指派你想要的 RC 动作。
-4. 改完设置即时生效（不需要 respring）；首次安装识别器会在解锁后挂上。
+2. 打开 RemoteCompanion → 触发器，找到 `Add-on: 从左侧滑入`、`Add-on: 双指上滑` 等 16 条，
+   给它们指派你想要的 RC 动作。不想要某条手势，就把那条触发器的动作留空，
+   或在 Add-on 页把整个 `Triggr 手势桥` 关掉。
+3. 无需 respring：识别器在 SpringBoard 手势管理器初始化时自动挂上。
 
 ## 与 RC 自带双指手势同时用
 

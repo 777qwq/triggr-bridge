@@ -123,6 +123,38 @@ static void TGFreezeBegin(void) {
     });
 }
 
+// 还原到落指快照。generation 不匹配说明冻结期间又落了新手指、快照已换轮，
+// 这时不还原位置（免得拿新快照的旧位置串场），但仍照常恢复开关与识别器。
+static void TGFreezeRestoreOffsets(void) {
+    if (tgFreezeSnapGen != tgBeganGeneration) return;
+    for (UIScrollView *view in tgFreezeViews) {
+        // 顺序要紧：setZoomScale 会按缩放比例重算 contentOffset，先还原缩放再摆位置。
+        NSNumber *z = [tgBeganZooms objectForKey:view];
+        if (z) {
+            CGFloat zoom = z.doubleValue;
+            if (zoom > 0 && fabs(view.zoomScale - zoom) > 0.01)
+                [view setZoomScale:zoom animated:NO];
+        }
+        NSValue *began = [tgBeganOffsets objectForKey:view];
+        if (began) {
+            CGPoint to = began.CGPointValue;
+            if (fabs(view.contentOffset.x - to.x) + fabs(view.contentOffset.y - to.y) > 0.5)
+                [view setContentOffset:to animated:NO];
+        }
+    }
+}
+
+// cn5.3.33：冻结开始时立即回弹。右侧系统 edge pan 用它把「识别前已经滚掉的那几 pt」
+// 当场撤销，而不是等抬手才跳回。只在已经冻结、且本轮落指快照有效时动作。
+static void TGFreezeRestoreNow(void) {
+    if (!tgFreezeOn) return;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ TGFreezeRestoreNow(); });
+        return;
+    }
+    @try { TGFreezeRestoreOffsets(); } @catch (__unused NSException *e) { }
+}
+
 static void TGFreezeEnd(void) {
     if (!tgFreezeOn) return;
     if (!NSThread.isMainThread) {
@@ -132,26 +164,7 @@ static void TGFreezeEnd(void) {
     tgFreezeOn = NO;
     tgFreezeGeneration++;
     @try {
-        // 统一：还原到落指快照。generation 不匹配说明冻结期间又落了新手指、快照已换轮，
-        // 这时不还原位置（免得拿新快照的旧位置串场），但仍照常恢复开关与识别器。
-        BOOL snapValid = (tgFreezeSnapGen == tgBeganGeneration);
-        for (UIScrollView *view in tgFreezeViews) {
-            if (snapValid) {
-                // 顺序要紧：setZoomScale 会按缩放比例重算 contentOffset，先还原缩放再摆位置。
-                NSNumber *z = [tgBeganZooms objectForKey:view];
-                if (z) {
-                    CGFloat zoom = z.doubleValue;
-                    if (zoom > 0 && fabs(view.zoomScale - zoom) > 0.01)
-                        [view setZoomScale:zoom animated:NO];
-                }
-                NSValue *began = [tgBeganOffsets objectForKey:view];
-                if (began) {
-                    CGPoint to = began.CGPointValue;
-                    if (fabs(view.contentOffset.x - to.x) + fabs(view.contentOffset.y - to.y) > 0.5)
-                        [view setContentOffset:to animated:NO];
-                }
-            }
-        }
+        TGFreezeRestoreOffsets();
         for (UIScrollView *view in tgFreezeScrollDisabled) view.scrollEnabled = YES;
         for (UIGestureRecognizer *recognizer in tgFreezeRecognizers) recognizer.enabled = YES;
     } @catch (__unused NSException *e) { }

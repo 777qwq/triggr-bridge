@@ -49,8 +49,7 @@ jobs:
           STAGE=.theos/_/var/jb
           fail=0
           for f in "$STAGE"/Library/MobileSubstrate/DynamicLibraries/TriggrBridge.dylib \
-                   "$STAGE"/Library/MobileSubstrate/DynamicLibraries/TriggrBridgeRelay.dylib \
-                   "$STAGE"/Library/PreferenceBundles/TriggrBridge.bundle/TriggrBridge; do
+                   "$STAGE"/Library/MobileSubstrate/DynamicLibraries/TriggrBridgeRelay.dylib; do
             echo "== $f"
             lipo -info "$f"
             archs=$(lipo -archs "$f")

@@ -1,13 +1,20 @@
 // TriggrBridge · RC — SpringBoard side.
 //
-// Recognizes 16 gestures RemoteCompanion does not natively have and posts one
-// Darwin notification per gesture (com.johndie.triggrbridge/<gesture id>). The
-// RC Add-on JSON listens on those names and exposes them as triggers; the user
+// Recognizes the 16 gestures RemoteCompanion does not natively have and posts one
+// Darwin notification per gesture (com.johndie.triggrbridge/<gesture id>). The RC
+// Add-on JSON listens on those names and exposes them as triggers; the user
 // assigns RC actions there. This tweak performs no action itself.
 //
-// Recognizer code (thresholds, orthogonal pinch/swipe judgement, freeze) is
-// ported unchanged from Triggr, where it was tuned on a real device over many
-// versions. Only the hand-off at the end changed: TGFire -> notify_post.
+// Edge recognizers are ported from Triggr cn5.3.33 (the current version):
+//   - left slide-in: plain UIPanGestureRecognizer in visual coordinates, keeps
+//     the system's native back-swipe.
+//   - right slide-in: system-level UIScreenEdgePanRecognizer, freezes/rebounds
+//     on Began, fires at 50pt on lift (cn5.3.30/31).
+// Multi-touch recognizers are ported from Triggr's tuned implementation.
+//
+// No settings panel: every gesture is always on. Enable/disable is done on the
+// RC Add-on's triggers. All recognizers declare shouldRecognizeSimultaneously=YES
+// so they coexist with RC's own edge recognizers on the same gesture manager.
 
 #import <UIKit/UIKit.h>
 #import <UIKit/UIGestureRecognizerSubclass.h>
@@ -30,53 +37,16 @@
 // Triggr uses 0x7467000; this bridge uses a different base so both can coexist.
 static const unsigned long long TGBGestureTypeBase = 0x7468000;
 
-#pragma mark - Preferences / enabled gestures
-
-static NSMutableSet<NSString *> *tgEnabled;      // gesture ids currently enabled
-static BOOL tgMasterOn = YES;
-static BOOL tgFreezeOn = YES;
-
-static void TGReadPrefs(void) {
-    CFStringRef domain = (__bridge CFStringRef)TGBridgeDomain;
-    CFPreferencesAppSynchronize(domain);
-    id v = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)TGBridgeMasterKey, domain));
-    tgMasterOn = v ? [v boolValue] : YES;
-    v = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)TGBridgeFreezeKey, domain));
-    tgFreezeOn = v ? [v boolValue] : YES;
-
-    NSMutableSet *set = [NSMutableSet set];
-    if (tgMasterOn) {
-        for (NSString *gid in TGBridgeGestureIds()) {
-            // 每个手势单独存一个开关。没写过 = 默认开启（装好就能用）。
-            id on = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)gid, domain));
-            if (!on || [on boolValue]) [set addObject:gid];
-        }
-    }
-    tgEnabled = set;
-}
-
-static BOOL TGIsEnabled(NSString *gestureId) {
-    return gestureId && [tgEnabled containsObject:gestureId];
-}
-
 // The whole "action": one notification. No shell, no app launch, no state.
 static void TGFire(NSString *gestureId) {
-    if (!TGIsEnabled(gestureId)) return;
+    if (!gestureId) return;
     notify_post(TGBridgeNotification(gestureId).UTF8String);
 }
 
-#pragma mark - Freeze (port from Triggr 2.1)
+#pragma mark - Freeze (port from Triggr cn5.3.33)
 
-static void TGMultiFreezeBegin(void) {
-    if (!tgFreezeOn) return;
-    TGFreezeBegin();
-    notify_post(TGBridgeFreezeBegin);
-}
-static void TGMultiFreezeEnd(void) {
-    if (!tgFreezeOn) return;
-    TGFreezeEnd();
-    notify_post(TGBridgeFreezeEnd);
-}
+static void TGMultiFreezeBegin(void) { TGFreezeBegin(); notify_post(TGBridgeFreezeBegin); }
+static void TGMultiFreezeEnd(void)   { TGFreezeEnd();   notify_post(TGBridgeFreezeEnd); }
 static void TGMultiSnapshotBegan(void) {
     TGFreezeSnapshotBegan();
     notify_post(TGBridgeFreezeSnapshot);
@@ -87,7 +57,67 @@ static BOOL TGMultiTouchesFinished(UIEvent *event) {
     return YES;
 }
 
-#pragma mark - Multi-touch recognizers (14 slots)
+// Edge freeze (cn5.3.33): on Began, freeze and immediately rebound to the
+//落指 snapshot; the Relay in each app does the same via FreezeBeginNow.
+static void TGEdgeFreezeBegin(void) {
+    TGFreezeBegin();
+    TGFreezeRestoreNow();
+    notify_post(TGBridgeFreezeBeginNow);
+}
+static void TGEdgeFreezeEnd(void) { TGFreezeEnd(); notify_post(TGBridgeFreezeEnd); }
+
+#pragma mark - Visual coordinate space (cn5.3.33)
+// SpringBoard's window does not rotate with the interface, so locationInView:nil
+// is physical portrait coordinates. UIScreen.coordinateSpace rotates with the
+// interface; fixedCoordinateSpace is device-fixed. All gesture judgements use
+// the visual space so rotation needs no direction/edge remapping.
+
+static CGSize TGVisualScreenSize(void) {
+    UIScreen *screen = [UIScreen mainScreen];
+    if (!screen) return CGSizeZero;
+    CGSize size = screen.coordinateSpace.bounds.size;
+    return (size.width > 0 && size.height > 0) ? size : screen.bounds.size;
+}
+
+static CGPoint TGVisualPointFromWindowPoint(CGPoint p, UIWindow *window) {
+    UIScreen *screen = window.screen ?: [UIScreen mainScreen];
+    if (!screen) return p;
+    if (window) return [window convertPoint:p toCoordinateSpace:screen.coordinateSpace];
+    return [screen.fixedCoordinateSpace convertPoint:p toCoordinateSpace:screen.coordinateSpace];
+}
+
+static UIWindow *TGVisualFallbackWindow(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows)
+            if (w.isKeyWindow) return w;
+    }
+    return nil;
+}
+
+static CGPoint TGVisualPointForTouch(UITouch *touch) {
+    UIWindow *window = touch.window ?: TGVisualFallbackWindow();
+    if (!window) return [touch locationInView:nil];
+    return TGVisualPointFromWindowPoint([touch locationInView:window], window);
+}
+
+static CGPoint TGVisualPointForGesture(UIGestureRecognizer *g) {
+    UIWindow *window = g.view.window ?: TGVisualFallbackWindow();
+    if (!window) return [g locationInView:nil];
+    return TGVisualPointFromWindowPoint([g locationInView:nil], window);
+}
+
+static CGPoint TGVisualCentroidForTouches(NSSet<UITouch *> *touches) {
+    CGPoint sum = CGPointZero;
+    NSUInteger n = 0;
+    for (UITouch *t in touches) {
+        CGPoint p = TGVisualPointForTouch(t);
+        sum.x += p.x; sum.y += p.y; n++;
+    }
+    return n ? CGPointMake(sum.x / n, sum.y / n) : CGPointZero;
+}
+
+#pragma mark - Multi-touch recognizers (14 gestures)
 
 typedef struct { uint8_t fingers; uint8_t kind; } TGGestureSlot;
 // kind: 0 点按, 1 上, 2 下, 3 左, 4 右, 5 捏合, 6 张开
@@ -96,7 +126,6 @@ static const TGGestureSlot kTGSlots[] = {
     {3, 0}, {3, 1}, {3, 2}, {3, 3}, {3, 4}, {3, 5}, {3, 6},
 };
 #define TG_SLOT_COUNT ((int)(sizeof(kTGSlots) / sizeof(kTGSlots[0])))
-// Gesture id for a slot: index 2 + slot in TGBridgeGestureIds().
 static NSString *TGSlotGestureId(int idx) {
     NSArray *ids = TGBridgeGestureIds();
     int i = 2 + idx;
@@ -127,7 +156,6 @@ static CGFloat TGMultiRadiusForTouches(NSSet<UITouch *> *touches, UIView *view) 
 @property (nonatomic) CGFloat initialRadius;
 @property (nonatomic) BOOL didFreeze;
 @end
-
 @implementation TGPinchRecognizer
 - (CGFloat)radiusForTouches:(NSSet<UITouch *> *)touches {
     return TGMultiRadiusForTouches(touches, self.view);
@@ -345,12 +373,10 @@ static const void *TGMultiIndexKey = &TGMultiIndexKey;
     });
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
-    NSNumber *idxN = objc_getAssociatedObject(g, TGMultiIndexKey);
-    if (!idxN) return NO;
-    int idx = idxN.intValue;
-    if (idx < 0 || idx >= TG_SLOT_COUNT) return NO;
-    return TGIsEnabled(TGSlotGestureId(idx));
+    return objc_getAssociatedObject(g, TGMultiIndexKey) != nil;
 }
+// Coexist with RC's recognizers on the same manager — the fix for the
+// "RC edge swipe blocks bridge slide-in" bug.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
 }
@@ -362,81 +388,145 @@ static void TGUpdateMultiTouchGestures(SBSystemGestureManager *manager) {
     if (!tgMultiRecognizers) tgMultiRecognizers = [NSMutableArray array];
     TGMultiTouchTarget *target = [TGMultiTouchTarget shared];
     for (int idx = 0; idx < TG_SLOT_COUNT; idx++) {
-        NSString *trigger = TGSlotGestureId(idx);
-        BOOL want = TGIsEnabled(trigger);
         UIGestureRecognizer *existing = nil;
         for (UIGestureRecognizer *r in tgMultiRecognizers)
             if ([objc_getAssociatedObject(r, TGMultiIndexKey) intValue] == idx) { existing = r; break; }
-        if (want && !existing) {
+        if (!existing) {
             UIGestureRecognizer *r = [target recognizerFor:idx];
             [manager addGestureRecognizer:r withType:TGMultiTypeBase + idx];
             [tgMultiRecognizers addObject:r];
-        } else if (!want && existing) {
-            [manager removeGestureRecognizer:existing];
-            [tgMultiRecognizers removeObject:existing];
         }
     }
 }
 
-#pragma mark - Edge slide-ins (2 gestures)
+#pragma mark - Edge slide-ins (cn5.3.33)
 
-static const CGFloat TGEdgeMargin = 20;
-static const CGFloat TGEdgeDistance = 60;
+static const CGFloat TGEdgeMargin = 20;          // 左缘起手贴边宽度（视觉坐标）
+static const CGFloat TGEdgeDistance = 60;        // 左侧普通 pan 的滑入距离
+static const CGFloat TGSystemEdgeDistance = 50;  // cn5.3.31：右侧系统手势 50pt，抬手触发
 
-// 从左侧滑入走普通 pan（保留系统原生返回）；从右侧滑入走系统级 screen-edge pan。
-@interface TGGLeftPanRecognizer : UIPanGestureRecognizer
+// 左侧「从左侧滑入」：普通 UIPanGestureRecognizer，保留系统原生返回（cn5.3.33）。
+@interface TGGPlainPanRecognizer : UIPanGestureRecognizer
 @property (nonatomic) BOOL fired;
+@property (nonatomic) CGPoint visualStart;
+@property (nonatomic) BOOL hasVisualStart;
 @end
-@implementation TGGLeftPanRecognizer
+@implementation TGGPlainPanRecognizer
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count != 1) { self.state = UIGestureRecognizerStateFailed; return; }
+    NSUInteger n = event.allTouches.count;
+    if (n == 1) { self.fired = NO; self.hasVisualStart = NO; }
+    if (n > 1) { self.state = UIGestureRecognizerStateFailed; return; }
+    CGPoint p = TGVisualCentroidForTouches(event.allTouches);
+    if (p.x > TGEdgeMargin) { self.state = UIGestureRecognizerStateFailed; return; }
+    self.visualStart = p;
+    self.hasVisualStart = YES;
+    [super touchesBegan:touches withEvent:event];
+}
+- (void)reset {
+    [super reset];
     self.fired = NO;
-    UITouch *touch = [touches anyObject];
-    CGPoint p = [touch locationInView:nil];
-    if (p.x > TGEdgeMargin || !TGIsEnabled(@"edge.left")) {
-        self.state = UIGestureRecognizerStateFailed;
-        return;
+    self.hasVisualStart = NO;
+}
+@end
+
+// 右侧「从右侧滑入」：系统级 UIScreenEdgePanGestureRecognizer（cn5.3.28+）。
+// SpringBoard 事件路由层优先认领，App 内容不再跟着滚；Began 时冻结并回弹到落指快照，
+// 抬手/取消解冻（cn5.3.30）。只认单指。
+@interface TGGSystemEdgeRecognizer : UIScreenEdgePanGestureRecognizer
+@property (nonatomic) BOOL fired;
+@property (nonatomic) BOOL frozen;
+@property (nonatomic) CGPoint visualStart;
+@property (nonatomic) BOOL hasVisualStart;
+@end
+@implementation TGGSystemEdgeRecognizer
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSUInteger n = event.allTouches.count;
+    if (n == 0 || n > 1) { self.state = UIGestureRecognizerStateFailed; return; }
+    self.fired = NO;
+    self.frozen = NO;
+    self.visualStart = TGVisualCentroidForTouches(event.allTouches);
+    self.hasVisualStart = YES;
+    TGMultiSnapshotBegan();
+    [super touchesBegan:touches withEvent:event];
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStateBegan && !self.frozen) {
+        self.frozen = YES;
+        TGEdgeFreezeBegin();
     }
-    [super touchesBegan:touches withEvent:event];
 }
-@end
-
-@interface TGGRightEdgeRecognizer : UIScreenEdgePanGestureRecognizer
-@property (nonatomic) BOOL fired;
-@end
-@implementation TGGRightEdgeRecognizer
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesBegan:touches withEvent:event];
-    if (event.allTouches.count > 1) { self.state = UIGestureRecognizerStateFailed; return; }
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    if (self.frozen) { self.frozen = NO; TGEdgeFreezeEnd(); }
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    if (self.frozen) { self.frozen = NO; TGEdgeFreezeEnd(); }
+}
+- (void)reset {
+    [super reset];
     self.fired = NO;
-    if (!TGIsEnabled(@"edge.right")) { self.state = UIGestureRecognizerStateFailed; return; }
+    self.hasVisualStart = NO;
+    if (self.frozen) { self.frozen = NO; TGEdgeFreezeEnd(); }
 }
 @end
 
-@interface TGGEdgeTarget : NSObject
+@interface TGGEdgeTarget : NSObject <UIGestureRecognizerDelegate>
 @end
 @implementation TGGEdgeTarget
-- (void)slidLeft:(TGGLeftPanRecognizer *)recognizer {
+- (void)slidLeft:(TGGPlainPanRecognizer *)recognizer {
     if (recognizer.fired) return;
     if (recognizer.state != UIGestureRecognizerStateChanged && recognizer.state != UIGestureRecognizerStateEnded) return;
-    CGPoint t = [recognizer translationInView:nil];
-    if (t.x < TGEdgeDistance || fabs(t.y) > t.x) return;
+    if (!recognizer.hasVisualStart) return;
+    CGPoint now = TGVisualPointForGesture(recognizer);
+    CGFloat dx = now.x - recognizer.visualStart.x;
+    CGFloat dy = now.y - recognizer.visualStart.y;
+    if (dx < TGEdgeDistance || fabs(dy) > dx) return;
     recognizer.fired = YES;
     TGFire(@"edge.left");
 }
-- (void)slidRight:(TGGRightEdgeRecognizer *)recognizer {
+- (void)slidRight:(TGGSystemEdgeRecognizer *)recognizer {
     if (recognizer.fired) return;
-    if (recognizer.state != UIGestureRecognizerStateChanged && recognizer.state != UIGestureRecognizerStateEnded) return;
-    CGPoint t = [recognizer translationInView:nil];
-    if (-t.x < TGEdgeDistance || fabs(t.y) > -t.x) return;
+    // cn5.3.31：只在手指离开时触发；拖动过程中不 fire。
+    if (recognizer.state != UIGestureRecognizerStateEnded) return;
+    if (!recognizer.hasVisualStart) return;
+    CGPoint now = TGVisualPointForGesture(recognizer);
+    CGFloat inward = recognizer.visualStart.x - now.x; // 视觉右边缘往左滑
+    CGFloat dy = now.y - recognizer.visualStart.y;
+    if (inward < TGSystemEdgeDistance || fabs(dy) > inward) return;
     recognizer.fired = YES;
     TGFire(@"edge.right");
 }
+// Coexist with RC's own edge recognizers on the same manager.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES;
+}
 @end
 
-static TGGLeftPanRecognizer *tgLeftPan;
-static TGGRightEdgeRecognizer *tgRightEdge;
+// 视觉右边缘在物理屏上对应哪条边（横屏时可能是物理上/下边）。
+static UIRectEdge TGGSystemEdgeForVisualRight(void) {
+    UIScreen *screen = [UIScreen mainScreen];
+    if (!screen) return UIRectEdgeRight;
+    CGSize visual = TGVisualScreenSize();
+    CGSize fixed = screen.fixedCoordinateSpace.bounds.size;
+    if (visual.width <= 0 || visual.height <= 0 || fixed.width <= 0 || fixed.height <= 0)
+        return UIRectEdgeRight;
+    CGPoint p = [screen.coordinateSpace convertPoint:CGPointMake(visual.width - 1, visual.height / 2)
+                                  toCoordinateSpace:screen.fixedCoordinateSpace];
+    CGFloat left = p.x, right = fixed.width - p.x, top = p.y, bottom = fixed.height - p.y;
+    CGFloat minD = left;
+    UIRectEdge edge = UIRectEdgeLeft;
+    if (right < minD) { minD = right; edge = UIRectEdgeRight; }
+    if (top < minD) { minD = top; edge = UIRectEdgeTop; }
+    if (bottom < minD) { edge = UIRectEdgeBottom; }
+    return edge;
+}
+
+static TGGPlainPanRecognizer *tgLeftPan;
+static TGGSystemEdgeRecognizer *tgRightEdge;
 static BOOL tgGestureManagerReady;
+static BOOL tgEdgeOrientationObserved;
 
 static void TGUpdateEdgeGestures(void) {
     if (!tgGestureManagerReady) return;
@@ -444,34 +534,40 @@ static void TGUpdateEdgeGestures(void) {
     if (!manager) return;
     static TGGEdgeTarget *target;
     if (!target) target = [TGGEdgeTarget new];
-
-    // 左缘：普通 pan，不参与系统返回仲裁、cancelsTouchesInView=NO。
-    if (TGIsEnabled(@"edge.left")) {
-        if (!tgLeftPan) {
-            tgLeftPan = [[TGGLeftPanRecognizer alloc] initWithTarget:target action:@selector(slidLeft:)];
-            tgLeftPan.cancelsTouchesInView = NO;
-            tgLeftPan.delaysTouchesBegan = NO;
-            tgLeftPan.delaysTouchesEnded = NO;
-            [manager addGestureRecognizer:tgLeftPan withType:TGBGestureTypeBase];
-        }
-    } else if (tgLeftPan) {
-        [manager removeGestureRecognizer:tgLeftPan];
-        tgLeftPan = nil;
+    if (!tgEdgeOrientationObserved) {
+        tgEdgeOrientationObserved = YES;
+        [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification
+                                                        object:nil
+                                                         queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(NSNotification *n) {
+            TGUpdateEdgeGestures();
+        }];
     }
 
-    // 右缘：系统级 screen-edge pan，识别到从源头取消 App 触摸。
-    if (TGIsEnabled(@"edge.right")) {
-        if (!tgRightEdge) {
-            tgRightEdge = [[TGGRightEdgeRecognizer alloc] initWithTarget:target action:@selector(slidRight:)];
-            tgRightEdge.edges = UIRectEdgeRight;
-            tgRightEdge.cancelsTouchesInView = YES;
-            tgRightEdge.delaysTouchesBegan = NO;
-            tgRightEdge.delaysTouchesEnded = NO;
-            [manager addGestureRecognizer:tgRightEdge withType:TGBGestureTypeBase + 1];
-        }
-    } else if (tgRightEdge) {
-        [manager removeGestureRecognizer:tgRightEdge];
-        tgRightEdge = nil;
+    // 左侧：普通 pan，保留原生返回，delegate 允许与 RC 识别器同时识别。
+    if (!tgLeftPan) {
+        tgLeftPan = [[TGGPlainPanRecognizer alloc] initWithTarget:target action:@selector(slidLeft:)];
+        tgLeftPan.delegate = target;
+        tgLeftPan.cancelsTouchesInView = NO;
+        tgLeftPan.delaysTouchesBegan = NO;
+        tgLeftPan.delaysTouchesEnded = NO;
+        [manager addGestureRecognizer:tgLeftPan withType:TGBGestureTypeBase];
+    }
+
+    // 右侧：系统级 screen-edge pan，delegate 允许与 RC 识别器同时识别。
+    UIRectEdge physicalRight = TGGSystemEdgeForVisualRight();
+    if (!tgRightEdge) {
+        tgRightEdge = [[TGGSystemEdgeRecognizer alloc] initWithTarget:target action:@selector(slidRight:)];
+        tgRightEdge.delegate = target;
+        tgRightEdge.edges = physicalRight;
+        tgRightEdge.minimumNumberOfTouches = 1;
+        tgRightEdge.maximumNumberOfTouches = 1;
+        tgRightEdge.cancelsTouchesInView = YES;
+        tgRightEdge.delaysTouchesBegan = NO;
+        tgRightEdge.delaysTouchesEnded = NO;
+        [manager addGestureRecognizer:tgRightEdge withType:TGBGestureTypeBase + 1];
+    } else {
+        tgRightEdge.edges = physicalRight; // 旋转后更新物理边
     }
 
     TGUpdateMultiTouchGestures(manager);
@@ -502,12 +598,5 @@ static void TGUpdateEdgeGestures(void) {
 #pragma mark - Constructor
 
 %ctor {
-    TGReadPrefs();
-    int token;
-    notify_register_dispatch(TGBridgeReloadNotify, &token, dispatch_get_main_queue(), ^(int t) {
-        TGReadPrefs();
-        tgGestureManagerReady = NO; // force re-arm below
-        tgGestureManagerReady = YES;
-        TGUpdateEdgeGestures();
-    });
+    TGUpdateEdgeGestures();
 }

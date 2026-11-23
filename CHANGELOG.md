@@ -1,5 +1,15 @@
 # TriggrBridge 更新记录
 
+## 1.0.1
+
+- **边缘识别器同步到 Triggr cn5.3.33**：
+  - 左侧滑入：普通 `UIPanGestureRecognizer`，判定改用视觉坐标（`UIScreen.coordinateSpace`），横屏不再错位，保留系统原生左滑返回。
+  - 右侧滑入：改回系统级 `UIScreenEdgePanGestureRecognizer`——SpringBoard 事件路由层优先认领，App 内容不再跟着滚；进入 Began 立即冻结并回弹到落指快照（Relay 侧同步），50pt 抬手才触发；视觉右边缘到物理边的换算覆盖横屏。
+  - 这两个类在 5.3.28～5.3.33 经多轮真机迭代，1.0.0 用的是旧的 5.3.11 实现，本次整体替换。
+- **修复 RC 边缘手势导致本插件滑入手势无法触发**：RC 的边缘识别器与本插件挂在同一个 `SBSystemGestureManager`，UIKit 默认互斥会把一方压成 Failed（即使 RC 没指派动作，识别器仍注册并参与互斥）。现所有识别器（边缘 + 多指）的 delegate 都返回 `shouldRecognizeSimultaneously = YES`，双方共存；方向判据各自独立，横滑与竖滑不会互相误触发。
+- **移除设置面板**：删除 Prefs 子工程与所有偏好开关（总开关、冻结开关、16 手势开关）、reload 通知。全部手势常开，启用/停用与动作统一在 RemoteCompanion 的 Add-on 触发器上操作。包体只含 2 个 dylib + 1 个 Add-on JSON。
+- 双切片 arm64 + arm64e，rootless。
+
 ## 1.0.0
 
 首个版本。新建独立工程，与 Triggr 5.3.x 共存。
